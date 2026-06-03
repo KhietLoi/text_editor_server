@@ -54,7 +54,9 @@ namespace text_editor_server
                 {
                     policy.WithOrigins("http://localhost:3000",
                         "http://localhost:5173",
-                        "https://text-editor-client-chi.vercel.app"
+                        "https://text-editor-client-chi.vercel.app",    
+                "https://text-editor-client-cf2f2xaus-tran-khiet-loi-s-projects.vercel.app"
+
                         )
                         .AllowAnyMethod()
                         .AllowAnyHeader()
