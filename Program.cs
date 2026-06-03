@@ -52,7 +52,10 @@ namespace text_editor_server
             {
                 options.AddPolicy("AllowReact", policy =>
                 {
-                    policy.WithOrigins("http://localhost:3000", "http://localhost:5173")
+                    policy.WithOrigins("http://localhost:3000",
+                        "http://localhost:5173",
+                        "https://text-editor-client-chi.vercel.app"
+                        )
                         .AllowAnyMethod()
                         .AllowAnyHeader()
                         .AllowCredentials();
