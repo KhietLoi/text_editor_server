@@ -47,17 +47,13 @@ namespace text_editor_server
             // Add controllers
             builder.Services.AddControllers();
 
+            var allowedOrigins = builder.Configuration.GetSection("AllowedOrigins").Get<string[]>();
             // Add CORS
             builder.Services.AddCors(options =>
             {
                 options.AddPolicy("AllowReact", policy =>
                 {
-                    policy.WithOrigins("http://localhost:3000",
-                        "http://localhost:5173",
-                        "https://text-editor-client-chi.vercel.app",    
-                "https://text-editor-client-cf2f2xaus-tran-khiet-loi-s-projects.vercel.app"
-
-                        )
+                    policy.WithOrigins(allowedOrigins!)
                         .AllowAnyMethod()
                         .AllowAnyHeader()
                         .AllowCredentials();
