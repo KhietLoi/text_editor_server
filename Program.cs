@@ -33,7 +33,7 @@ namespace text_editor_server
                
             
             builder.Services.AddDbContext<AppDbContext>(options =>
-                options.UseSqlServer(connectionString));
+                options.UseNpgsql(connectionString));
           
             // Add services
             builder.Services.AddScoped< AuthService>();
