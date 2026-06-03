@@ -1,0 +1,357 @@
+﻿using DocumentFormat.OpenXml.Bibliography;
+using Microsoft.EntityFrameworkCore;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+using text_editor_server.Data;
+using text_editor_server.DTOs.res;
+using text_editor_server.Entities;
+
+namespace text_editor_server.Services
+{
+    public class ProofFileService
+    {
+        private readonly AppDbContext _context;
+
+        private readonly ILogger<ProofFileService> _logger;
+
+        public ProofFileService(AppDbContext context, ILogger<ProofFileService> logger)
+        {
+            _context = context;
+            _logger = logger;
+        }
+
+        public async Task<ServiceResult<ProofFileRes>> UploadProofFileAsync(
+            IFormFile file,      
+            Guid currentUserId, bool isGlobal)
+        {
+            try
+            {
+                if (file == null || file.Length == 0)
+                    return ServiceResult<ProofFileRes>.Fail("File không hợp lệ");
+
+                byte[] fileBytes;
+
+                using (var memoryStream = new MemoryStream())
+                {
+                    await file.CopyToAsync(memoryStream);
+                    fileBytes = memoryStream.ToArray();
+                }
+
+                // Mã hóa file
+                var encryptedData = EncryptFile(fileBytes);
+
+                var entity = new ProofFile
+                {
+                    Id = Guid.NewGuid(),
+                    FileName = file.FileName,
+                    StoredFileName = $"{Guid.NewGuid()}_{file.FileName}",
+                    FileSize = file.Length,
+                    ContentType = file.ContentType,
+                    Data = encryptedData,
+                    CreatedAt = DateTime.UtcNow,
+                    IsGlobal = isGlobal
+                };
+
+                _context.ProofFiles.Add(entity);
+                await _context.SaveChangesAsync();
+
+                return ServiceResult<ProofFileRes>.Ok(new ProofFileRes
+                {
+                    Id = entity.Id,
+                    FileName = entity.FileName,
+                    StoredFileName = entity.StoredFileName,
+                    FileSize = entity.FileSize,
+                    ContentType = entity.ContentType,
+                    CreatedAt = entity.CreatedAt,
+                    IsGlobal = entity.IsGlobal,
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to upload proof file");
+                return ServiceResult<ProofFileRes>.Fail("Đã xảy ra lỗi khi tải tệp: " + ex.Message);
+            }
+        }
+
+
+        public async Task<ServiceResult<DocumentFile>> CreateDocumentFileAsync(
+            Guid userId,
+            Guid documentId, Guid fileId)
+        {
+            try
+            {
+                var documentExists = await _context.Documents
+                    .AsNoTracking()
+                    .AnyAsync(x => x.Id == documentId);
+
+                if (!documentExists)
+                {
+                    return ServiceResult<DocumentFile>.Fail("Document not found");
+                }
+
+                var fileExists = await _context.ProofFiles
+                    .AsNoTracking()
+                    .AnyAsync(x => x.Id == fileId);
+
+                if (!fileExists)
+                {
+                    return ServiceResult<DocumentFile>.Fail("File not found");
+                }
+
+                var existed = await _context.DocumentFiles
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(x => x.DocumentId == documentId && x.FileId == fileId);
+
+                if (existed != null)
+                {
+                    return ServiceResult<DocumentFile>.Fail("File already attached");
+                }
+
+                var documentFile = new DocumentFile
+                {
+                    Id = Guid.NewGuid(),
+                    DocumentId = documentId,
+                    FileId = fileId,
+                    AttachedBy = userId,
+                    AttachedAt = DateTime.UtcNow
+                };
+
+                    _context.DocumentFiles.Add(documentFile);
+                await _context.SaveChangesAsync();
+
+                return ServiceResult<DocumentFile>.Ok(documentFile);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to create document file");
+                return ServiceResult<DocumentFile>.Fail("Đã xảy ra lỗi khi tải tệp: " + ex.Message);
+            }
+        }
+
+
+        public async Task<ServiceResult<ProofFileDownloadRes>> DownloadProofFileAsync(Guid fileId)
+        {
+            try
+            {
+                var entity = await _context.ProofFiles
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(x => x.Id == fileId);
+
+                if (entity == null)
+                {
+                    return ServiceResult<ProofFileDownloadRes>
+                        .Fail("File not found");
+                }
+
+                byte[] decryptedData;
+
+                try
+                {
+                    decryptedData = DecryptFile(entity.Data);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Failed to decrypt proof file {FileId}", fileId);
+                    return ServiceResult<ProofFileDownloadRes>
+                        .Fail("Failed to decrypt file");
+                }
+
+                return ServiceResult<ProofFileDownloadRes>.Ok(new ProofFileDownloadRes
+                {
+                    FileName = entity.FileName,
+                    ContentType = entity.ContentType,
+                    Data = decryptedData
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to download proof file {FileId}", fileId);
+                return ServiceResult<ProofFileDownloadRes>
+                    .Fail("Failed to download file");
+            }
+        }
+
+        public async Task<ServiceResult<bool>> DeleteProofFileAsync(Guid fileId)
+        {
+            try
+            {
+                var entity = await _context.ProofFiles
+                    .FirstOrDefaultAsync(x => x.Id == fileId);
+
+                if (entity == null)
+                {
+                    return ServiceResult<bool>.Fail("File not found");
+                }
+
+                _context.ProofFiles.Remove(entity);
+                await _context.SaveChangesAsync();
+
+                return ServiceResult<bool>.Ok(true);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to delete proof file {FileId}", fileId);
+                return ServiceResult<bool>.Fail("Failed to delete file");
+            }
+        }
+
+        private byte[] EncryptFile(byte[] data)
+        {
+            var key = Encoding.UTF8.GetBytes("12345678901234561234567890123456"); // 32 bytes
+            var iv = Encoding.UTF8.GetBytes("1234567890123456"); // 16 bytes
+
+            using var aes = Aes.Create();
+
+            aes.Key = key;
+            aes.IV = iv;
+
+            using var encryptor = aes.CreateEncryptor();
+            using var ms = new MemoryStream();
+
+            using (var cryptoStream = new CryptoStream(ms, encryptor, CryptoStreamMode.Write))
+            {
+                cryptoStream.Write(data, 0, data.Length);
+            }
+
+            return ms.ToArray();
+        }
+
+        private byte[] DecryptFile(byte[] encryptedData)
+        {
+            var key = Encoding.UTF8.GetBytes("12345678901234561234567890123456"); // 32 bytes
+            var iv = Encoding.UTF8.GetBytes("1234567890123456"); // 16 bytes
+
+            using var aes = Aes.Create();
+
+            aes.Key = key;
+            aes.IV = iv;
+
+            using var decryptor = aes.CreateDecryptor();
+            using var ms = new MemoryStream(encryptedData);
+
+            using var cryptoStream = new CryptoStream(ms, decryptor, CryptoStreamMode.Read);
+            using var resultStream = new MemoryStream();
+
+            cryptoStream.CopyTo(resultStream);
+
+            return resultStream.ToArray();
+        }
+
+        public async Task<ServiceResult<List<ProofFileRes>>> GetAllInternalAsync(Guid documentId)
+        {
+
+
+            var files = await _context.DocumentFiles
+            .AsNoTracking()
+            .Where(d => d.DocumentId == documentId)
+            .Select(d => new ProofFileRes
+            {
+                Id = d.File.Id,
+                FileName = d.File.FileName,
+                StoredFileName = d.File.StoredFileName,
+                FileUrl = d.File.StoredFileName,
+                FileSize = d.File.FileSize,
+                ContentType = d.File.ContentType,
+                IsGlobal = d.File.IsGlobal,
+                CreatedAt = d.File.CreatedAt
+            })
+            .ToListAsync();
+
+            return ServiceResult<List<ProofFileRes>>.Ok(files);
+
+
+        }
+
+
+
+        public async Task<ServiceResult<List< ProofFileRes>>> GetAllAsync()
+        {
+
+            var files = await _context.ProofFiles
+                .AsNoTracking()
+                .Where(f => f.IsGlobal) // Chỉ lấy các file có IsGlobal = true
+                .Select(f =>
+                 
+                new ProofFileRes
+                {
+                    Id = f.Id,
+                    FileName = f.FileName,
+                    StoredFileName = f.StoredFileName,
+                    FileUrl = f.StoredFileName,
+                    FileSize = f.FileSize,
+                    ContentType = f.ContentType,
+                    IsGlobal = f.IsGlobal,    
+                    CreatedAt = f.CreatedAt
+                 })
+                    .ToListAsync();
+
+
+            return ServiceResult<List<ProofFileRes>>.Ok(files);
+            
+            
+        }
+
+
+        //public List<HyperlinkIndexedRes> BuildHyperlinkIndexFromSfdtJson(JsonElement sfdt)
+        //{
+        //    var result = new List<HyperlinkIndexedRes>();
+
+        //    if (!sfdt.TryGetProperty("b", out var sections))
+        //        return result;
+
+        //    int sectionCounter = 0;
+
+        //    foreach (var section in sections.EnumerateArray())
+        //    {
+        //        sectionCounter++;
+
+        //        if (!section.TryGetProperty("i", out var inlineNodes))
+        //            continue;
+
+        //        int linkCounter = 0;
+
+        //        foreach (var node in inlineNodes.EnumerateArray())
+        //        {
+        //            if (!node.TryGetProperty("tlp", out var tlp))
+        //                continue;
+
+        //            var text = tlp.GetString();
+        //            var url = ExtractHyperlink(text);
+
+        //            if (string.IsNullOrEmpty(url))
+        //                continue;
+
+        //            linkCounter++;
+
+        //            result.Add(new HyperlinkIndexedRes
+        //            {
+        //                Code = $"1.{sectionCounter}.{linkCounter}",
+        //                Url = url
+        //            });
+        //        }
+        //    }
+
+        //    return result;
+        //}
+        //private string? ExtractHyperlink(string text)
+        //{
+        //    const string prefix = "HYPERLINK \"";
+
+        //    if (string.IsNullOrEmpty(text))
+        //        return null;
+
+        //    var start = text.IndexOf(prefix, StringComparison.OrdinalIgnoreCase);
+        //    if (start == -1)
+        //        return null;
+
+        //    start += prefix.Length;
+
+        //    var end = text.IndexOf("\"", start);
+        //    if (end == -1)
+        //        return null;
+
+        //    return text.Substring(start, end - start);
+        //}
+    }
+}
